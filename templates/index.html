@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal Cascade Tracer 儀表板</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>Cascade Tracer</h2>
+                <p>系統參數設定</p>
+            </div>
+            
+            <div class="config-section">
+                <h3>1. 系統初始化</h3>
+                <div class="form-group">
+                    <label for="numUsers">使用者樣本數</label>
+                    <input type="number" id="numUsers" value="1000" min="10" max="5000">
+                </div>
+                <div class="form-group">
+                    <label for="radiusK">搜尋半徑 K (合併距離)</label>
+                    <input type="number" id="radiusK" value="1.0" step="0.5">
+                </div>
+                <button id="buildBtn" class="btn primary-btn">建立全域 Hubs</button>
+            </div>
+
+            <div class="config-section" id="traceSection" style="opacity: 0.5; pointer-events: none;">
+                <h3>2. 影響範圍查詢</h3>
+                <div class="form-group">
+                    <label for="targetDay">目標天數</label>
+                    <select id="targetDay"></select>
+                </div>
+                <div class="form-group">
+                    <label for="targetHub">目標全域 Hub</label>
+                    <select id="targetHub"></select>
+                </div>
+                <div class="form-group">
+                    <label for="timeStart">查詢區間起點 (t)</label>
+                    <input type="number" id="timeStart" value="1" min="1" max="48">
+                    <small class="time-hint" id="timeStartHint">00:30</small>
+                </div>
+                <div class="form-group">
+                    <label for="timeEnd">查詢區間終點 (t)</label>
+                    <input type="number" id="timeEnd" value="10" min="1" max="48">
+                    <small class="time-hint" id="timeEndHint">05:00</small>
+                </div>
+                <button id="traceBtn" class="btn secondary-btn">追蹤連鎖影響</button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-bar">
+                <h1>Universal Cascade 追蹤分析系統</h1>
+                <div class="tabs-container">
+                    <button id="tab1Btn" class="tab-btn active" data-target="hubsView">1. 全局Hubs與統計</button>
+                    <button id="tab2Btn" class="tab-btn" data-target="impactView" disabled>2. 追蹤結果分析</button>
+                    <button id="tab3Btn" class="tab-btn" data-target="warningView" disabled>3. 個人預警系統</button>
+                    <button id="tab4Btn" class="tab-btn" data-target="trafficView" disabled>4. 交通影響分析</button>
+                </div>
+                <div class="status-indicator">
+                    <span id="statusDot" class="dot offline"></span>
+                    <span id="statusText">系統未連線</span>
+                </div>
+            </header>
+
+            <div class="content-scroll">
+                <!-- Loader -->
+                <div id="loader" class="loader-container hidden">
+                    <div class="spinner"></div>
+                    <p id="loaderText">處理中...</p>
+                </div>
+
+                <!-- Hubs Topology View -->
+                <section id="hubsView" class="view-section hidden">
+                    <div class="card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h2 style="margin-bottom: 0; border: none; padding: 0;">Global 與 Local Hubs 拓樸分佈</h2>
+                            <div style="font-size: 0.875rem; color: var(--text-muted);">
+                                <strong>Global Hubs:</strong> <span id="globalHubsCount">0</span> | 
+                                <strong>Local Hubs:</strong> <span id="localHubsCount">0</span>
+                            </div>
+                        </div>
+                        <div class="image-container">
+                            <img id="hubsPlot" src="" alt="Hubs Topology Plot">
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Impact Dashboard View -->
+                <section id="impactView" class="view-section hidden">
+                    <div class="dashboard-grid">
+                        <div class="card chart-card">
+                            <h2>影響追蹤結果 (混合路徑)</h2>
+                            <div class="image-container">
+                                <img id="impactPlotPaths" src="" alt="Impact Tracing Plot With Paths">
+                            </div>
+                        </div>
+
+                        <div class="card chart-card">
+                            <h2>影響追蹤結果 (僅 Hubs)</h2>
+                            <div class="image-container">
+                                <img id="impactPlotHubs" src="" alt="Impact Tracing Plot Hubs Only">
+                            </div>
+                        </div>
+                        
+                        <div class="card tables-card" style="grid-column: 1 / -1; flex-direction: column; gap: 20px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                                <h2 style="margin: 0; padding: 0; border: none;">詳細受影響名單</h2>
+                                <button id="downloadCsvBtn" class="btn primary-btn" style="display: none;">下載預測結果 (CSV)</button>
+                            </div>
+                            <div style="display: flex; flex-direction: row; gap: 20px; width: 100%;">
+                                <div class="table-container" style="flex: 1;">
+                                    <h3 class="primary-title">第一層被影響者 (Primary Impacted Users)</h3>
+                                    <div class="table-wrapper">
+                                        <table id="primaryTable">
+                                            <thead>
+                                                <tr>
+                                                    <th>UID</th>
+                                                    <th>被影響 Hub ID</th>
+                                                    <th>預計影響時間</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                
+                                <div class="table-container" style="flex: 1;">
+                                    <h3 class="secondary-title">第二層被影響者 (Secondary Impacted Users)</h3>
+                                    <div class="table-wrapper">
+                                        <table id="secondaryTable">
+                                            <thead>
+                                                <tr>
+                                                    <th>UID</th>
+                                                    <th>被影響 Hub ID</th>
+                                                    <th>預計影響時間</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Warning System View -->
+                <section id="warningView" class="view-section hidden">
+                    <div class="card">
+                        <h2>個人軌跡預警系統</h2>
+                        <p style="color: var(--text-muted); margin-bottom: 20px;">輸入您過去的足跡（時間與座標），系統將分析您是否曾接近高風險的 Hub 區域。</p>
+                        
+                        <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
+                            <div class="form-group" style="flex: 1; min-width: 150px;">
+                                <label>假設事件 Hub</label>
+                                <select id="warningHub"></select>
+                            </div>
+                            <div class="form-group" style="flex: 1; min-width: 150px;">
+                                <label>事件天數</label>
+                                <select id="warningDay"></select>
+                            </div>
+                        </div>
+                        
+                        <div class="table-wrapper" style="margin-bottom: 20px; overflow: visible; min-height: 150px;">
+                            <table id="trajectoryTable">
+                                <thead>
+                                    <tr>
+                                        <th>天數 (d)</th>
+                                        <th>時間 (t)</th>
+                                        <th>X 座標</th>
+                                        <th>Y 座標</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="trajectoryBody">
+                                    <!-- dynamic rows -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <button id="addTrajBtn" class="btn secondary-btn" style="width: auto; margin-right: 10px;">+ 新增足跡</button>
+                        <button id="checkWarningBtn" class="btn primary-btn" style="width: auto;">檢查風險</button>
+                        
+                        <div id="warningResult" style="margin-top: 20px; display: none; background: #fff1f2; border-left: 4px solid var(--crimson); padding: 15px; border-radius: 4px;">
+                            <h3 style="margin-bottom: 10px; color: var(--crimson);">預警分析結果</h3>
+                            <ul id="warningList" style="list-style-position: inside; padding-left: 10px; color: var(--text-main);">
+                            </ul>
+                        </div>
+                        <div id="safeResult" style="margin-top: 20px; display: none; background: #f0fdf4; border-left: 4px solid #16a34a; padding: 15px; border-radius: 4px;">
+                            <h3 style="margin-bottom: 0; color: #16a34a;">安全：未偵測到高風險足跡重疊。</h3>
+                        </div>
+                        
+                        <div id="warningPlotContainer" style="display: none; margin-top: 20px;">
+                            <h3 style="margin-bottom: 10px; color: var(--text-main);">足跡與影響範圍比對圖</h3>
+                            <div class="image-container">
+                                <img id="warningPlot" src="" alt="Warning Plot">
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Traffic Impact View -->
+                <section id="trafficView" class="view-section hidden">
+                    <div class="card">
+                        <h2>交通影響分析設定</h2>
+                        <p style="color: var(--text-muted); margin-bottom: 20px;">假設某個 Global Hub 發生交通建設或堵塞，分析該區間內受影響的人數與趨勢。</p>
+                        <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
+                            <div class="form-group" style="flex: 1; min-width: 150px;">
+                                <label>影響 Hub</label>
+                                <select id="trafficHub"></select>
+                            </div>
+                            <div class="form-group" style="flex: 1; min-width: 150px;">
+                                <label>目標天數</label>
+                                <select id="trafficDay"></select>
+                            </div>
+                            <div class="form-group" style="flex: 1; min-width: 150px;">
+                                <label>堵塞開始(t)</label>
+                                <input type="number" id="trafficStart" value="1" min="1" max="48">
+                            </div>
+                            <div class="form-group" style="flex: 1; min-width: 150px;">
+                                <label>堵塞結束(t)</label>
+                                <input type="number" id="trafficEnd" value="10" min="1" max="48">
+                            </div>
+                            <div style="display: flex; align-items: flex-end; padding-bottom: 16px;">
+                                <button id="analyzeTrafficBtn" class="btn primary-btn" style="height: 40px; padding: 0 20px;">分析</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="dashboard-grid">
+                        <div class="card chart-card">
+                            <h2>影響人數時間分佈圖</h2>
+                            <canvas id="trafficChart"></canvas>
+                        </div>
+                        
+                        <div class="card tables-card">
+                            <h2>受影響個別路徑狀況</h2>
+                            <div class="table-wrapper">
+                                <table id="trafficTable">
+                                    <thead>
+                                        <tr>
+                                            <th>UID</th>
+                                            <th>經過時間</th>
+                                            <th>所在 Hub</th>
+                                            <th>狀態</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="trafficTableBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="trafficPlotContainer" style="display: none; margin-top: 20px;" class="card">
+                        <h2 style="margin-bottom: 15px;">交通影響路徑分佈圖</h2>
+                        <div class="image-container" style="text-align: center;">
+                            <img id="trafficPlot" src="" alt="Traffic Plot" style="max-width: 100%; height: auto;">
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Initial Empty State -->
+                <div id="emptyState" class="empty-state">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                    <h2>歡迎使用科技部 Universal Cascade 分析儀表板</h2>
+                    <p>請先在左側系統參數設定區進行初始化並建立全域 Hubs，以啟動系統分析功能。</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/main.js"></script>
+</body>
+</html>

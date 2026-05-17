@@ -1,0 +1,437 @@
+document.addEventListener('DOMContentLoaded', () => {
+    let currentPredictionData = null;
+    const buildBtn = document.getElementById('buildBtn');
+    const traceBtn = document.getElementById('traceBtn');
+    const traceSection = document.getElementById('traceSection');
+    
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const loader = document.getElementById('loader');
+    const loaderText = document.getElementById('loaderText');
+    
+    const emptyState = document.getElementById('emptyState');
+    const hubsView = document.getElementById('hubsView');
+    const impactView = document.getElementById('impactView');
+    const warningView = document.getElementById('warningView');
+    const trafficView = document.getElementById('trafficView');
+    
+    const hubsPlot = document.getElementById('hubsPlot');
+    const impactPlotPaths = document.getElementById('impactPlotPaths');
+    const impactPlotHubs = document.getElementById('impactPlotHubs');
+    
+    const tab1Btn = document.getElementById('tab1Btn');
+    const tab2Btn = document.getElementById('tab2Btn');
+    const tab3Btn = document.getElementById('tab3Btn');
+    const tab4Btn = document.getElementById('tab4Btn');
+    const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+    
+    const primaryTableBody = document.querySelector('#primaryTable tbody');
+    const secondaryTableBody = document.querySelector('#secondaryTable tbody');
+    
+    const targetDaySelect = document.getElementById('targetDay');
+    const targetHubSelect = document.getElementById('targetHub');
+    
+    const timeStartInput = document.getElementById('timeStart');
+    const timeEndInput = document.getElementById('timeEnd');
+    const timeStartHint = document.getElementById('timeStartHint');
+    const timeEndHint = document.getElementById('timeEndHint');
+    
+    function formatTimeHint(t) {
+        const hours = Math.floor((t * 30) / 60);
+        const mins = (t * 30) % 60;
+        return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+    }
+    
+    timeStartInput.addEventListener('input', (e) => {
+        timeStartHint.textContent = formatTimeHint(e.target.value);
+    });
+    
+    timeEndInput.addEventListener('input', (e) => {
+        timeEndHint.textContent = formatTimeHint(e.target.value);
+    });
+    
+    function setStatus(status, text) {
+        statusDot.className = `dot ${status}`;
+        statusText.textContent = text;
+    }
+    
+    function showLoader(text) {
+        loaderText.textContent = text;
+        loader.classList.remove('hidden');
+    }
+    
+    function hideLoader() {
+        loader.classList.add('hidden');
+    }
+    
+    function switchTab(targetViewId) {
+        [hubsView, impactView, warningView, trafficView].forEach(v => v.classList.add('hidden'));
+        [tab1Btn, tab2Btn, tab3Btn, tab4Btn].forEach(b => b.classList.remove('active'));
+        
+        document.getElementById(targetViewId).classList.remove('hidden');
+        if(targetViewId === 'hubsView') tab1Btn.classList.add('active');
+        if(targetViewId === 'impactView') tab2Btn.classList.add('active');
+        if(targetViewId === 'warningView') tab3Btn.classList.add('active');
+        if(targetViewId === 'trafficView') tab4Btn.classList.add('active');
+    }
+    
+    tab1Btn.addEventListener('click', () => switchTab('hubsView'));
+    tab2Btn.addEventListener('click', () => switchTab('impactView'));
+    tab3Btn.addEventListener('click', () => switchTab('warningView'));
+    tab4Btn.addEventListener('click', () => switchTab('trafficView'));
+    
+    buildBtn.addEventListener('click', async () => {
+        const numUsers = parseInt(document.getElementById('numUsers').value);
+        const radiusK = parseFloat(document.getElementById('radiusK').value);
+        
+        showLoader('建立全域 Hubs 與事件日誌中...');
+        setStatus('processing', '建立中...');
+        
+        try {
+            const response = await fetch('/api/build_hubs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ numUsers, radiusK })
+            });
+            
+            const data = await response.json();
+            
+            if(data.status === 'success') {
+                // Show Plot
+                hubsPlot.src = data.hubs_plot;
+                document.getElementById('globalHubsCount').textContent = data.global_hubs_count;
+                document.getElementById('localHubsCount').textContent = data.local_hubs_count;
+                
+                // Fetch Options
+                const optsResponse = await fetch('/api/get_options');
+                const optsData = await optsResponse.json();
+                
+                targetDaySelect.innerHTML = optsData.days.map(d => `<option value="${d}">第 ${d} 天</option>`).join('');
+                targetHubSelect.innerHTML = optsData.hubs.map(h => `<option value="${h}">G${h}</option>`).join('');
+                
+                // Update UI
+                emptyState.classList.add('hidden');
+                switchTab('hubsView');
+                
+                traceSection.style.opacity = '1';
+                traceSection.style.pointerEvents = 'auto';
+                tab2Btn.disabled = false;
+                tab3Btn.disabled = false;
+                tab4Btn.disabled = false;
+                
+                const trafficDaySelect = document.getElementById('trafficDay');
+                const trafficHubSelect = document.getElementById('trafficHub');
+                const warningDaySelect = document.getElementById('warningDay');
+                const warningHubSelect = document.getElementById('warningHub');
+                
+                const dayOptions = optsData.days.map(d => `<option value="${d}">第 ${d} 天</option>`).join('');
+                const hubOptions = optsData.hubs.map(h => `<option value="${h}">G${h}</option>`).join('');
+                
+                if (trafficDaySelect) trafficDaySelect.innerHTML = dayOptions;
+                if (trafficHubSelect) trafficHubSelect.innerHTML = hubOptions;
+                if (warningDaySelect) warningDaySelect.innerHTML = dayOptions;
+                if (warningHubSelect) warningHubSelect.innerHTML = hubOptions;
+                
+                setStatus('online', `系統就緒 (${data.global_hubs_count} 個 Global Hubs)`);
+            }
+        } catch (err) {
+            console.error(err);
+            setStatus('offline', '建立 Hubs 發生錯誤');
+            alert('無法建立 Hubs，請查看控制台詳細資訊。');
+        } finally {
+            hideLoader();
+        }
+    });
+    
+    traceBtn.addEventListener('click', async () => {
+        const day = parseInt(targetDaySelect.value);
+        const hub = parseInt(targetHubSelect.value);
+        const tStart = parseInt(timeStartInput.value);
+        const tEnd = parseInt(timeEndInput.value);
+        
+        if(tStart > tEnd) {
+            alert('時間區間起點必須小於或等於終點。');
+            return;
+        }
+        
+        showLoader('追蹤連鎖影響中...');
+        setStatus('processing', '分析中...');
+        
+        try {
+            const response = await fetch('/api/trace_cascade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ day, hub, tStart, tEnd })
+            });
+            
+            const data = await response.json();
+            
+            if(data.status === 'success') {
+                currentPredictionData = data;
+                downloadCsvBtn.style.display = 'block';
+                
+                impactPlotPaths.src = data.impact_plot_paths;
+                impactPlotHubs.src = data.impact_plot_hubs;
+                
+                const populateTable = (tbody, users) => {
+                    tbody.innerHTML = '';
+                    if(users.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">無受影響使用者</td></tr>';
+                    } else {
+                        users.forEach(u => {
+                            const tr = document.createElement('tr');
+                            tr.innerHTML = `
+                                <td>${u.uid}</td>
+                                <td>G${u.hub}</td>
+                                <td>${u.time}</td>
+                            `;
+                            tbody.appendChild(tr);
+                        });
+                    }
+                };
+                
+                populateTable(primaryTableBody, data.primary_users);
+                populateTable(secondaryTableBody, data.secondary_users);
+                
+                switchTab('impactView');
+                
+                setStatus('online', `追蹤完成 (${data.primary_users.length} 位 Primary, ${data.secondary_users.length} 位 Secondary)`);
+            }
+        } catch (err) {
+            console.error(err);
+            setStatus('online', '追蹤發生錯誤');
+            alert('追蹤連鎖影響失敗，請查看控制台詳細資訊。');
+        } finally {
+            hideLoader();
+        }
+    });
+    
+    downloadCsvBtn.addEventListener('click', () => {
+        if (!currentPredictionData) return;
+        
+        let csvContent = "層級,UID,被影響 Hub ID,預計影響時間\n";
+        
+        currentPredictionData.primary_users.forEach(u => {
+            csvContent += `第一層,${u.uid},G${u.hub},${u.time}\n`;
+        });
+        
+        currentPredictionData.secondary_users.forEach(u => {
+            csvContent += `第二層,${u.uid},G${u.hub},${u.time}\n`;
+        });
+        
+        const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+        const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `cascade_prediction_day${targetDaySelect.value}_hub${targetHubSelect.value}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    });
+    
+    // ==========================================
+    // Warning System Logic
+    // ==========================================
+    const trajectoryBody = document.getElementById('trajectoryBody');
+    const addTrajBtn = document.getElementById('addTrajBtn');
+    const checkWarningBtn = document.getElementById('checkWarningBtn');
+    const warningResult = document.getElementById('warningResult');
+    const safeResult = document.getElementById('safeResult');
+    const warningList = document.getElementById('warningList');
+    
+    function addTrajectoryRow() {
+        const tr = document.createElement('tr');
+        const defaultDay = document.getElementById('warningDay')?.value || 1;
+        tr.innerHTML = `
+            <td><input type="number" class="traj-d" value="${defaultDay}" min="1" max="100" style="width: 80px;"></td>
+            <td><input type="number" class="traj-time" value="1" min="1" max="48" style="width: 80px;"></td>
+            <td><input type="number" class="traj-x" value="0" step="0.1" style="width: 80px;"></td>
+            <td><input type="number" class="traj-y" value="0" step="0.1" style="width: 80px;"></td>
+            <td><button class="btn delete-traj-btn" style="background: var(--crimson); color: white; padding: 4px 8px;">刪除</button></td>
+        `;
+        tr.querySelector('.delete-traj-btn').addEventListener('click', () => {
+            tr.remove();
+        });
+        trajectoryBody.appendChild(tr);
+    }
+    
+    if (addTrajBtn) {
+        addTrajectoryRow();
+        addTrajBtn.addEventListener('click', addTrajectoryRow);
+        
+        const warningDaySelect = document.getElementById('warningDay');
+        if (warningDaySelect) {
+            warningDaySelect.addEventListener('change', (e) => {
+                const newDay = e.target.value;
+                document.querySelectorAll('.traj-d').forEach(input => {
+                    input.value = newDay;
+                });
+            });
+        }
+        
+        checkWarningBtn.addEventListener('click', async () => {
+            const rows = trajectoryBody.querySelectorAll('tr');
+            const trajectory = Array.from(rows).map(row => ({
+                d: row.querySelector('.traj-d').value,
+                time: row.querySelector('.traj-time').value,
+                x: row.querySelector('.traj-x').value,
+                y: row.querySelector('.traj-y').value
+            }));
+            
+            const eventDay = document.getElementById('warningDay').value;
+            const eventHub = document.getElementById('warningHub').value;
+            
+            showLoader('分析風險中...');
+            try {
+                const response = await fetch('/api/check_warning', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ trajectory, eventDay, eventHub })
+                });
+                const data = await response.json();
+                
+                warningResult.style.display = 'none';
+                safeResult.style.display = 'none';
+                warningList.innerHTML = '';
+                document.getElementById('warningPlotContainer').style.display = 'none';
+                
+                if (data.status === 'success') {
+                    if (data.warnings.length > 0) {
+                        data.warnings.forEach(w => {
+                            const li = document.createElement('li');
+                            li.innerHTML = `<strong>${w.message}</strong> (距離: ${w.distance})`;
+                            warningList.appendChild(li);
+                        });
+                        warningResult.style.display = 'block';
+                    } else {
+                        safeResult.style.display = 'block';
+                    }
+                    
+                    if (data.warning_plot) {
+                        document.getElementById('warningPlot').src = data.warning_plot;
+                        document.getElementById('warningPlotContainer').style.display = 'block';
+                    }
+                }
+            } catch(err) {
+                console.error(err);
+                alert('風險檢查失敗');
+            } finally {
+                hideLoader();
+            }
+        });
+    }
+
+    // ==========================================
+    // Traffic Analysis Logic
+    // ==========================================
+    let trafficChartInstance = null;
+    const analyzeTrafficBtn = document.getElementById('analyzeTrafficBtn');
+    
+    if (analyzeTrafficBtn) {
+        analyzeTrafficBtn.addEventListener('click', async () => {
+            const day = parseInt(document.getElementById('trafficDay').value);
+            const hub = parseInt(document.getElementById('trafficHub').value);
+            const tStart = parseInt(document.getElementById('trafficStart').value);
+            const tEnd = parseInt(document.getElementById('trafficEnd').value);
+            
+            if(tStart > tEnd) {
+                alert('時間區間起點必須小於或等於終點。');
+                return;
+            }
+            
+            showLoader('分析交通影響中...');
+            try {
+                const response = await fetch('/api/trace_cascade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ day, hub, tStart, tEnd, isTrafficTab: true })
+                });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    const timeCountsPrimary = {};
+                    const allUsers = [];
+                    
+                    data.primary_users.forEach(u => {
+                        timeCountsPrimary[u.time] = (timeCountsPrimary[u.time] || 0) + 1;
+                        allUsers.push({ ...u, level: '被阻斷 (Blocked)' });
+                    });
+                    
+                    allUsers.sort((a, b) => a.time.localeCompare(b.time));
+                    
+                    const tbody = document.getElementById('trafficTableBody');
+                    tbody.innerHTML = '';
+                    if (allUsers.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">無受影響資料</td></tr>';
+                    } else {
+                        allUsers.forEach(u => {
+                            const tr = document.createElement('tr');
+                            tr.innerHTML = `
+                                <td>${u.uid}</td>
+                                <td>${u.time}</td>
+                                <td>G${u.hub}</td>
+                                <td><span style="color: var(--crimson)">${u.level}</span></td>
+                            `;
+                            tbody.appendChild(tr);
+                        });
+                    }
+                    
+                    const allTimesSet = new Set(Object.keys(timeCountsPrimary));
+                    const sortedTimes = Array.from(allTimesSet).sort();
+                    
+                    const primaryCounts = sortedTimes.map(t => timeCountsPrimary[t] || 0);
+                    
+                    const ctx = document.getElementById('trafficChart').getContext('2d');
+                    if (trafficChartInstance) {
+                        trafficChartInstance.destroy();
+                    }
+                    
+                    trafficChartInstance = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: sortedTimes,
+                            datasets: [
+                                {
+                                    label: '經過並被阻斷人數',
+                                    data: primaryCounts,
+                                    backgroundColor: 'rgba(220, 38, 38, 0.9)', // Red
+                                    borderColor: 'rgba(220, 38, 38, 1)',
+                                    borderWidth: 1
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            scales: {
+                                x: {
+                                    stacked: true,
+                                    title: { display: true, text: '影響時間' }
+                                },
+                                y: {
+                                    stacked: true,
+                                    beginAtZero: true,
+                                    title: { display: true, text: '受影響人數' }
+                                }
+                            }
+                        }
+                    });
+                    
+                    if (data.impact_plot_paths) {
+                        document.getElementById('trafficPlot').src = data.impact_plot_paths;
+                        document.getElementById('trafficPlotContainer').style.display = 'block';
+                    } else {
+                        document.getElementById('trafficPlotContainer').style.display = 'none';
+                    }
+                }
+            } catch(err) {
+                console.error(err);
+                alert('交通影響分析失敗');
+            } finally {
+                hideLoader();
+            }
+        });
+    }
+});
