@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import pandas as pd
 import os
+import glob
 from tracer import UniversalCascadeTracer, generate_hubs_plot, generate_impact_plot
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
@@ -19,8 +20,18 @@ def get_data():
     global df_cache
     if df_cache is None:
         data_path = os.path.join(os.path.dirname(__file__), 'data', 'cityA-dataset.parquet')
-        df_cache = pd.read_parquet(data_path)
+        df_cache = pd.read_parquet(data_path).rename({
+            'x_full': 'x',
+            'y_full': 'y'
+        })
+        print(df_cache.columns)
     return df_cache
+
+@app.route('/api/datasets', methods=['GET'])
+def get_datasets():
+    files = glob.glob('data/*.parquet')
+    datasets = [os.path.basename(f) for f in files]
+    return jsonify({'status': 'success', 'datasets': datasets})
 
 @app.route('/api/build_hubs', methods=['POST'])
 def build_hubs():
@@ -28,9 +39,16 @@ def build_hubs():
     data = request.json
     num_users = data.get('numUsers', 1000)
     radius_K = data.get('radiusK', 1.0)
+    dataset_name = data.get('dataset', 'cityA-dataset.parquet')
     
-    df = get_data()
-    select_df = df[df['uid'].isin(range(num_users))].copy()
+    file_path = os.path.join(os.path.dirname(__file__), 'data', dataset_name)
+    
+    # Optimize loading: read only 'uid' column first, then read selected UIDs to avoid ArrowMemoryError
+    uids_df = pd.read_parquet(file_path, columns=['uid'])
+    unique_uids = sorted(uids_df['uid'].unique())
+    selected_uids = unique_uids[:num_users]
+    
+    select_df = pd.read_parquet(file_path, filters=[('uid', 'in', selected_uids)])
     select_df = select_df.dropna(subset=['x', 'y', 'd', 't'])
     
     tracer_instance = UniversalCascadeTracer(select_df)
@@ -119,43 +137,75 @@ def check_warning():
     data = request.json
     trajectory = data.get('trajectory', [])
     event_day = int(data.get('eventDay', 1))
-    event_hub = int(data.get('eventHub', 0))
     
+    event_hubs = data.get('eventHubs', [])
+    if not event_hubs:
+        event_hubs = [int(data.get('eventHub', 0))]
+    else:
+        event_hubs = [int(h) for h in event_hubs]
+        
     warnings = []
-    
-    primary_info, secondary_info = tracer_instance.trace_cascade_by_day(
-        event_day, (1, 48), event_hub
-    )
     
     hub_infection_times = {}
     hub_infection_levels = {}
+    hub_infection_sources = {}
     
-    for uid, info in primary_info.items():
-        h = info['hub']
-        t = info['t']
-        if h not in hub_infection_times or t < hub_infection_times[h]:
-            hub_infection_times[h] = t
-            hub_infection_levels[h] = '直接影響 (第一層)'
-            
-    for uid, info in secondary_info.items():
-        h = info['hub']
-        t = info['t']
-        if h not in hub_infection_times or t < hub_infection_times[h]:
-            hub_infection_times[h] = t
-            if h not in hub_infection_levels:
-                hub_infection_levels[h] = '間接影響 (第二層)'
+    all_primary_info = {}
+    all_secondary_info = {}
+    
+    for event_hub in event_hubs:
+        primary_info, secondary_info = tracer_instance.trace_cascade_by_day(
+            event_day, (1, 48), event_hub
+        )
+        
+        hub_infection_times[event_hub] = 1
+        hub_infection_levels[event_hub] = '出事源頭 (Global Hub)'
+        hub_infection_sources[event_hub] = event_hub
+        
+        all_primary_info.update(primary_info)
+        all_secondary_info.update(secondary_info)
+        
+        for uid, info in primary_info.items():
+            h = info['hub']
+            t = info['t']
+            if h not in hub_infection_times or t < hub_infection_times[h]:
+                hub_infection_times[h] = t
+                hub_infection_levels[h] = '直接影響 (Primary)'
+                hub_infection_sources[h] = event_hub
                 
-    hub_infection_times[event_hub] = 1
-    hub_infection_levels[event_hub] = '直接影響 (觸發源)'
+        for uid, info in secondary_info.items():
+            h = info['hub']
+            t = info['t']
+            if h not in hub_infection_times or t < hub_infection_times[h]:
+                hub_infection_times[h] = t
+                if h not in hub_infection_levels:
+                    hub_infection_levels[h] = '間接影響 (Secondary)'
+                    hub_infection_sources[h] = event_hub
+                    
+    def format_time(t_val):
+        h = int(t_val * 30 // 60)
+        m = int(t_val * 30 % 60)
+        return f"{h:02d}:{m:02d}"
+        
+    overall_min_dist = float('inf')
     
     for point in trajectory:
-        d = int(point.get('d', event_day))
         t = int(point['time'])
         x = float(point['x'])
         y = float(point['y'])
         
-        if d != event_day:
-            continue
+        nearest_event_hub = -1
+        min_dist_to_event = float('inf')
+        for eh in event_hubs:
+            if eh in tracer_instance.global_hubs:
+                g_coord = tracer_instance.global_hubs[eh]
+                dist = ((g_coord[0] - x)**2 + (g_coord[1] - y)**2)**0.5
+                if dist < min_dist_to_event:
+                    min_dist_to_event = dist
+                    nearest_event_hub = eh
+                    
+        if min_dist_to_event < overall_min_dist:
+            overall_min_dist = min_dist_to_event
             
         nearest_hub = -1
         min_dist = float('inf')
@@ -168,27 +218,33 @@ def check_warning():
         if min_dist < 10.0:
             if nearest_hub in hub_infection_times and t >= hub_infection_times[nearest_hub]:
                 level = hub_infection_levels[nearest_hub]
+                inf_time = hub_infection_times[nearest_hub]
+                source_hub = hub_infection_sources[nearest_hub]
                 warnings.append({
-                    'd': d,
-                    'time': t,
+                    'time': format_time(t),
                     'x': x,
                     'y': y,
-                    'hub': nearest_hub,
-                    'distance': round(min_dist, 2),
+                    'hub': f"G{nearest_hub}",
                     'level': level,
-                    'message': f'第 {d} 天 時間 t={t} 進入受影響區域 G{nearest_hub} ({level})'
+                    'message': f"注意！時間 {format_time(t)} 進入 {level} Hub G{nearest_hub} (從 {format_time(inf_time)} 起受 G{source_hub} 事故影響)。距事發源頭 G{nearest_event_hub} 距離: {round(min_dist_to_event, 2)}"
                 })
                 
+    primary_users = [{'uid': int(uid), 'hub': int(info['hub']), 'time': format_time(info['t'])} for uid, info in all_primary_info.items()]
+    secondary_users = [{'uid': int(uid), 'hub': int(info['hub']), 'time': format_time(info['t'])} for uid, info in all_secondary_info.items()]
+    
     plot_b64 = generate_impact_plot(
-        tracer_instance, event_day, event_hub, 
-        primary_info, secondary_info, 
-        draw_paths=False, user_trajectory=[p for p in trajectory if int(p.get('d', event_day)) == event_day]
+        tracer_instance, event_day, event_hubs[0] if event_hubs else 0, 
+        all_primary_info, all_secondary_info, 
+        draw_paths=False, user_trajectory=trajectory
     )
             
     return jsonify({
         'status': 'success',
+        'overall_min_dist': round(overall_min_dist, 2) if overall_min_dist != float('inf') else None,
         'warnings': warnings,
-        'warning_plot': plot_b64
+        'warning_plot': plot_b64,
+        'primary_users': primary_users,
+        'secondary_users': secondary_users
     })
 
 if __name__ == '__main__':

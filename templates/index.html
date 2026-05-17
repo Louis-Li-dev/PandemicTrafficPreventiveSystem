@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Universal Cascade Tracer 儀表板</title>
+    <title>疫情&交通預警系統</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -21,6 +21,12 @@
             
             <div class="config-section">
                 <h3>1. 系統初始化</h3>
+                <div class="form-group">
+                    <label for="datasetSelect">資料集 Dataset</label>
+                    <select id="datasetSelect">
+                        <option value="cityA-dataset.parquet">cityA-dataset.parquet</option>
+                    </select>
+                </div>
                 <div class="form-group">
                     <label for="numUsers">使用者樣本數</label>
                     <input type="number" id="numUsers" value="1000" min="10" max="5000">
@@ -59,7 +65,7 @@
         <!-- Main Content -->
         <main class="main-content">
             <header class="top-bar">
-                <h1>Universal Cascade 追蹤分析系統</h1>
+                <h1>疫情&交通預警系統</h1>
                 <div class="tabs-container">
                     <button id="tab1Btn" class="tab-btn active" data-target="hubsView">1. 全局Hubs與統計</button>
                     <button id="tab2Btn" class="tab-btn" data-target="impactView" disabled>2. 追蹤結果分析</button>
@@ -162,8 +168,8 @@
                         
                         <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
                             <div class="form-group" style="flex: 1; min-width: 150px;">
-                                <label>假設事件 Hub</label>
-                                <select id="warningHub"></select>
+                                <label>假設事件 Hub (可多選)</label>
+                                <select id="warningHub" multiple style="height: 100px;"></select>
                             </div>
                             <div class="form-group" style="flex: 1; min-width: 150px;">
                                 <label>事件天數</label>
@@ -175,7 +181,6 @@
                             <table id="trajectoryTable">
                                 <thead>
                                     <tr>
-                                        <th>天數 (d)</th>
                                         <th>時間 (t)</th>
                                         <th>X 座標</th>
                                         <th>Y 座標</th>
@@ -204,6 +209,42 @@
                             <h3 style="margin-bottom: 10px; color: var(--text-main);">足跡與影響範圍比對圖</h3>
                             <div class="image-container">
                                 <img id="warningPlot" src="" alt="Warning Plot">
+                            </div>
+                        </div>
+
+                        <div id="warningTablesContainer" style="display: none; margin-top: 30px; border-top: 1px solid var(--border-color); padding-top: 20px;">
+                            <h3 style="margin-bottom: 15px; color: var(--text-main);">事件日受影響名單與接觸時間</h3>
+                            <div class="dashboard-grid">
+                                <div class="table-container">
+                                    <h3 class="primary-title">第一層直接影響 (Primary)</h3>
+                                    <div class="table-wrapper">
+                                        <table>
+                                            <thead>
+                                                <tr>
+                                                    <th>使用者 ID</th>
+                                                    <th>被影響 Hub ID</th>
+                                                    <th>接觸時間</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="warningPrimaryTableBody"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                <div class="table-container">
+                                    <h3 class="secondary-title">第二層間接影響 (Secondary)</h3>
+                                    <div class="table-wrapper">
+                                        <table>
+                                            <thead>
+                                                <tr>
+                                                    <th>使用者 ID</th>
+                                                    <th>被影響 Hub ID</th>
+                                                    <th>接觸時間</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="warningSecondaryTableBody"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -272,7 +313,7 @@
                 <!-- Initial Empty State -->
                 <div id="emptyState" class="empty-state">
                     <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                    <h2>歡迎使用科技部 Universal Cascade 分析儀表板</h2>
+                    <h2>歡迎使用分析儀表板</h2>
                     <p>請先在左側系統參數設定區進行初始化並建立全域 Hubs，以啟動系統分析功能。</p>
                 </div>
             </div>

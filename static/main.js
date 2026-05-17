@@ -18,6 +18,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const hubsPlot = document.getElementById('hubsPlot');
     const impactPlotPaths = document.getElementById('impactPlotPaths');
     const impactPlotHubs = document.getElementById('impactPlotHubs');
+    // Elements
+    const datasetSelect = document.getElementById('datasetSelect');
+    const numUsersInput = document.getElementById('numUsers');
+    const radiusKInput = document.getElementById('radiusK');
     
     const tab1Btn = document.getElementById('tab1Btn');
     const tab2Btn = document.getElementById('tab2Btn');
@@ -80,18 +84,46 @@ document.addEventListener('DOMContentLoaded', () => {
     tab3Btn.addEventListener('click', () => switchTab('warningView'));
     tab4Btn.addEventListener('click', () => switchTab('trafficView'));
     
+    // Fetch datasets on load
+    async function fetchDatasets() {
+        try {
+            const res = await fetch('/api/datasets');
+            const data = await res.json();
+            if (data.status === 'success') {
+                datasetSelect.innerHTML = '';
+                data.datasets.forEach(ds => {
+                    const option = document.createElement('option');
+                    option.value = ds;
+                    option.textContent = ds;
+                    datasetSelect.appendChild(option);
+                });
+                setStatus('online', '伺服器已連線 (請點擊「建立全域 Hubs」)');
+            } else {
+                setStatus('offline', '讀取資料集失敗');
+            }
+        } catch(err) {
+            console.error('Failed to load datasets', err);
+            setStatus('offline', '系統未連線 (伺服器未啟動)');
+        }
+    }
+    
+    // Initialize datasets
+    fetchDatasets();
+    
+    // Build Hubs
     buildBtn.addEventListener('click', async () => {
-        const numUsers = parseInt(document.getElementById('numUsers').value);
-        const radiusK = parseFloat(document.getElementById('radiusK').value);
+        const numUsers = parseInt(numUsersInput.value);
+        const radiusK = parseFloat(radiusKInput.value);
+        const dataset = datasetSelect.value;
         
-        showLoader('建立全域 Hubs 與事件日誌中...');
-        setStatus('processing', '建立中...');
+        buildBtn.disabled = true;
+        buildBtn.textContent = '計算中...';
         
         try {
             const response = await fetch('/api/build_hubs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ numUsers, radiusK })
+                body: JSON.stringify({ numUsers, radiusK, dataset })
             });
             
             const data = await response.json();
@@ -139,6 +171,8 @@ document.addEventListener('DOMContentLoaded', () => {
             setStatus('offline', '建立 Hubs 發生錯誤');
             alert('無法建立 Hubs，請查看控制台詳細資訊。');
         } finally {
+            buildBtn.disabled = false;
+            buildBtn.textContent = '建立全域 Hubs';
             hideLoader();
         }
     });
@@ -239,87 +273,141 @@ document.addEventListener('DOMContentLoaded', () => {
     const addTrajBtn = document.getElementById('addTrajBtn');
     const checkWarningBtn = document.getElementById('checkWarningBtn');
     const warningResult = document.getElementById('warningResult');
-    const safeResult = document.getElementById('safeResult');
     const warningList = document.getElementById('warningList');
+    const safeResult = document.getElementById('safeResult');
+    const warningDay = document.getElementById('warningDay');
+    const warningHub = document.getElementById('warningHub');
+    const warningPlotContainer = document.getElementById('warningPlotContainer');
+    const warningPlot = document.getElementById('warningPlot');
+    const warningTablesContainer = document.getElementById('warningTablesContainer');
+    const warningPrimaryTableBody = document.getElementById('warningPrimaryTableBody');
+    const warningSecondaryTableBody = document.getElementById('warningSecondaryTableBody');
     
-    function addTrajectoryRow() {
+    function addTrajectoryRow(t = 24, x = 100, y = 75) {
         const tr = document.createElement('tr');
-        const defaultDay = document.getElementById('warningDay')?.value || 1;
         tr.innerHTML = `
-            <td><input type="number" class="traj-d" value="${defaultDay}" min="1" max="100" style="width: 80px;"></td>
-            <td><input type="number" class="traj-time" value="1" min="1" max="48" style="width: 80px;"></td>
-            <td><input type="number" class="traj-x" value="0" step="0.1" style="width: 80px;"></td>
-            <td><input type="number" class="traj-y" value="0" step="0.1" style="width: 80px;"></td>
-            <td><button class="btn delete-traj-btn" style="background: var(--crimson); color: white; padding: 4px 8px;">刪除</button></td>
+            <td><input type="number" class="form-control form-control-sm traj-t" value="${t}" min="1" max="48"></td>
+            <td><input type="number" class="form-control form-control-sm traj-x" value="${x}"></td>
+            <td><input type="number" class="form-control form-control-sm traj-y" value="${y}"></td>
+            <td><button class="btn btn-sm btn-danger w-100" onclick="this.closest('tr').remove()">刪除</button></td>
         `;
-        tr.querySelector('.delete-traj-btn').addEventListener('click', () => {
-            tr.remove();
-        });
         trajectoryBody.appendChild(tr);
     }
     
     if (addTrajBtn) {
-        addTrajectoryRow();
-        addTrajBtn.addEventListener('click', addTrajectoryRow);
-        
-        const warningDaySelect = document.getElementById('warningDay');
-        if (warningDaySelect) {
-            warningDaySelect.addEventListener('change', (e) => {
-                const newDay = e.target.value;
-                document.querySelectorAll('.traj-d').forEach(input => {
-                    input.value = newDay;
-                });
-            });
-        }
+        addTrajBtn.addEventListener('click', () => addTrajectoryRow());
         
         checkWarningBtn.addEventListener('click', async () => {
+            const eventDay = warningDay.value;
+            const selectedOptions = Array.from(warningHub.selectedOptions).map(opt => parseInt(opt.value));
+            if (selectedOptions.length === 0) {
+                alert("請至少選擇一個假設事件 Hub！");
+                return;
+            }
+            
             const rows = trajectoryBody.querySelectorAll('tr');
-            const trajectory = Array.from(rows).map(row => ({
-                d: row.querySelector('.traj-d').value,
-                time: row.querySelector('.traj-time').value,
-                x: row.querySelector('.traj-x').value,
-                y: row.querySelector('.traj-y').value
-            }));
+            const trajectory = [];
             
-            const eventDay = document.getElementById('warningDay').value;
-            const eventHub = document.getElementById('warningHub').value;
+            rows.forEach(r => {
+                const t = r.querySelector('.traj-t').value;
+                const x = r.querySelector('.traj-x').value;
+                const y = r.querySelector('.traj-y').value;
+                if(t && x && y) {
+                    trajectory.push({
+                        d: parseInt(eventDay),
+                        time: parseInt(t),
+                        x: parseFloat(x),
+                        y: parseFloat(y)
+                    });
+                }
+            });
             
-            showLoader('分析風險中...');
+            checkWarningBtn.disabled = true;
+            checkWarningBtn.textContent = '檢查中...';
+            warningResult.style.display = 'none';
+            safeResult.style.display = 'none';
+            warningPlotContainer.style.display = 'none';
+            warningList.innerHTML = '';
+            if (warningTablesContainer) {
+                warningTablesContainer.style.display = 'none';
+                warningPrimaryTableBody.innerHTML = '';
+                warningSecondaryTableBody.innerHTML = '';
+            }
+            
             try {
-                const response = await fetch('/api/check_warning', {
+                const res = await fetch('/api/check_warning', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ trajectory, eventDay, eventHub })
+                    body: JSON.stringify({ trajectory, eventDay: parseInt(eventDay), eventHubs: selectedOptions })
                 });
-                const data = await response.json();
-                
-                warningResult.style.display = 'none';
-                safeResult.style.display = 'none';
-                warningList.innerHTML = '';
-                document.getElementById('warningPlotContainer').style.display = 'none';
-                
+                const data = await res.json();
                 if (data.status === 'success') {
+                    const distText = data.overall_min_dist !== null ? `距任一事件 Hub 最近距離：${data.overall_min_dist}` : '';
+                    
                     if (data.warnings.length > 0) {
-                        data.warnings.forEach(w => {
-                            const li = document.createElement('li');
-                            li.innerHTML = `<strong>${w.message}</strong> (距離: ${w.distance})`;
-                            warningList.appendChild(li);
-                        });
                         warningResult.style.display = 'block';
+                        let html = '';
+                        if (distText) {
+                            html += `<li style="font-weight:bold; list-style:none; margin-bottom:10px; color:var(--crimson);">${distText}</li>`;
+                        }
+                        data.warnings.forEach(w => {
+                            html += `<li>${w.message}</li>`;
+                        });
+                        warningList.innerHTML = html;
                     } else {
                         safeResult.style.display = 'block';
+                        if (distText) {
+                            safeResult.innerHTML = `<h3 style="margin-bottom: 5px; color: #16a34a;">安全：未偵測到高風險足跡重疊。</h3><p style="margin:0; color:#16a34a; font-size:0.875rem;">${distText}</p>`;
+                        } else {
+                            safeResult.innerHTML = `<h3 style="margin-bottom: 0; color: #16a34a;">安全：未偵測到高風險足跡重疊。</h3>`;
+                        }
                     }
                     
                     if (data.warning_plot) {
-                        document.getElementById('warningPlot').src = data.warning_plot;
-                        document.getElementById('warningPlotContainer').style.display = 'block';
+                        warningPlot.src = data.warning_plot;
+                        warningPlotContainer.style.display = 'block';
                     }
+                    
+                    if (warningTablesContainer) {
+                        warningTablesContainer.style.display = 'block';
+                        
+                        if (data.primary_users && data.primary_users.length > 0) {
+                            data.primary_users.forEach(u => {
+                                const tr = document.createElement('tr');
+                                tr.innerHTML = `
+                                    <td>${u.uid}</td>
+                                    <td>G${u.hub}</td>
+                                    <td>${u.time}</td>
+                                `;
+                                warningPrimaryTableBody.appendChild(tr);
+                            });
+                        } else {
+                            warningPrimaryTableBody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">無直接影響使用者</td></tr>';
+                        }
+                        
+                        if (data.secondary_users && data.secondary_users.length > 0) {
+                            data.secondary_users.forEach(u => {
+                                const tr = document.createElement('tr');
+                                tr.innerHTML = `
+                                    <td>${u.uid}</td>
+                                    <td>G${u.hub}</td>
+                                    <td>${u.time}</td>
+                                `;
+                                warningSecondaryTableBody.appendChild(tr);
+                            });
+                        } else {
+                            warningSecondaryTableBody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">無間接影響使用者</td></tr>';
+                        }
+                    }
+                } else {
+                    alert('檢查失敗: ' + (data.error || '未知錯誤'));
                 }
             } catch(err) {
                 console.error(err);
                 alert('風險檢查失敗');
             } finally {
-                hideLoader();
+                checkWarningBtn.disabled = false;
+                checkWarningBtn.textContent = '檢查風險';
             }
         });
     }
