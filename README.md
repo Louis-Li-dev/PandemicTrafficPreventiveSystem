@@ -8,13 +8,14 @@
 ## 🚀 核心功能特色
 
 ### 1. 🗂️ 多資料集極速自適應載入 (A、B、C、D)
-* 系統無縫支援 `City A`、`City B`、`City C`、`City D` 等多個不同規模的城市數據集。
-* **PyArrow 串流過濾技術**：針對包含 **1.11 億行** 數據的 City A，系統採用極輕量的 UID 先行預讀並以 PyArrow 快取過濾載入，徹底解決傳統 `read_parquet` 面臨的記憶體溢出 (OutOfMemory) 崩潰問題，載入時間從數分鐘壓縮至 **1.3 秒**。
+* 系統無縫支援 `City A`、`City B`、`City C` 到 `City D` 等多個不同規模的城市數據集。
+* **PyArrow 串流過濾技術**：針對包含 **1.11 億行** 數據的龐大資料集，系統採用極輕量的 UID 先行預讀並以 PyArrow 快取過濾載入，徹底解決傳統 `read_parquet` 面臨的記憶體溢出 (OutOfMemory) 崩潰問題，載入時間從數分鐘壓縮至 **1.3 秒**。
 * **自適應 UID 分布**：智慧識別各城市資料集之獨特 UID 範圍（例如 City A `0~99999`，City B `27001~30000`），動態精確篩選使用者。
 
-### 2. 📊 全域與局域 Hubs 拓樸網絡圖繪製
+### 2. 📊 全域與局域 Hubs 拓樸網絡分析
 * 基於使用者歷史移動軌跡進行空間時序滾動中位數去噪 (Smoothing Window)。
 * 利用空間密度聚類法自動提煉出使用者的個人區域 Hub，再匯聚為全城市之全域 Hubs (Global Hubs) 拓樸圖，並支援網頁即時統計分析。
+* 實驗分析產生的所有圖表會自動保存於 `figure/` 目錄中。
 
 ### 3. 🕸️ 傳播鏈連鎖影響追蹤 (Cascade Tracer)
 * **雙重模式分析**：支援**路徑整合 (Path-Integrated)** 與**僅 Hub 模式 (Hub-Only)** 分析，以動態傳播樹圖表呈現。
@@ -24,7 +25,8 @@
 ### 4. 🚨 個人軌跡風險預警系統 (Tab 3)
 * 允許使用者動態輸入任意時間區間與坐標的移動足跡。
 * 支援**多事故 Hub** 同時假設，自動計算使用者與任一事故源頭 Hub 的最近物理距離。
-* **接觸時間追蹤與預警**：系統不只提出警告，更會在右側貼心呈現 **「事件日受影響名單與接觸時間表」**，將當天被波及的 Primary 與 Secondary 使用者與其接觸時間（如 `12:30`）分門別類完整列出。
+* **空間碰撞與時間資訊預警**：系統智慧匹配空間距離（$< 10$ 米為暴露範圍）。只要探針足跡與受波及的 Global Hub（包括黃色間接波及區域）重疊，就會即時產生警告，並貼心顯示該 Hub 的風險等級、最早受波及時間與引起該污染的源頭事故 Hub。
+* 右側輔以 **「事件日受影響名單與接觸時間表」**，將當天被波及的 Primary 與 Secondary 使用者與其接觸時間（如 `12:30`）分門別類完整列出。
 
 ### 5. 🚧 交通建設阻斷分析 (Tab 4)
 * 針對重要交通節點（Global Hub）發生阻斷或堵塞時，模擬在特定天數與時間區間內，直接或間接造成路網癱瘓與使用者路徑中斷的阻礙人數與時間分布趨勢。
@@ -33,7 +35,7 @@
 
 ## 🛠️ 技術棧
 * **後端架構**：Python 3.8+ / Flask / Flask-CORS
-* **科學計算 & 機器學習**：Pandas / PyArrow / NumPy / Scikit-Learn (AgglomerativeClustering)
+* **科學計算 & 機器學習**：Pandas / PyArrow / NumPy / Scikit-Learn (HDBSCAN, AgglomerativeClustering)
 * **資料視覺化**：Matplotlib (後端即時渲染並以 Base64 格式輸出前端) / Chart.js
 * **前端介面**：HTML5 Semantic tags / Vanilla CSS3 (具玻璃擬物 Glassmorphism 質感與深色側邊欄) / Vanilla ES6 JavaScript
 
@@ -48,10 +50,17 @@ TGIS/
 ├── static/
 │   ├── main.js              # 前端控制與 API 交互邏輯
 │   └── style.css            # 精美擬真儀表板樣式
-├── app.py                   # 後端 Flask API 控制中心 (多資料集自適應載入與預警邏輯)
-├── tracer.py                # 核心演算法 (多層級傳播樹、Hub 拓樸計算模組)
+├── module/                  # 核心演算法模組
+│   ├── __init__.py          # 模組初始化
+│   ├── tracer.py            # UniversalCascadeTracer (Hub 拓樸計算與傳播級聯追蹤)
+│   ├── evaluation.py        # 評估空間聚類品質的工具函數
+│   └── parallel_helper.py   # 用於加速局部樞紐計算的平行運算輔助工具
+├── figure/                  # 存放所有自動產生的學術分析圖表 (.png)
+├── scratch/                 # 存放測試與資料分析的輔助腳本
+├── app.py                   # 後端 Flask API 控制中心 (自適應載入與預警邏輯)
+├── experiments.ipynb        # Jupyter Notebook 實驗主流程檔 (已設定自動輸出圖表至 figure/)
 ├── requirements.txt         # 系統依賴軟體套件清單
-└── README.md                # 本文件說明檔
+└── README.md                # 本文件說明檔 (傳統中文)
 ```
 
 ---
