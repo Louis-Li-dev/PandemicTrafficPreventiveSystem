@@ -3,7 +3,7 @@ from flask_cors import CORS
 import pandas as pd
 import os
 import glob
-from tracer import UniversalCascadeTracer, generate_hubs_plot, generate_impact_plot
+from module import UniversalCascadeTracer, generate_hubs_plot, generate_impact_plot
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
@@ -207,27 +207,27 @@ def check_warning():
         if min_dist_to_event < overall_min_dist:
             overall_min_dist = min_dist_to_event
             
-        nearest_hub = -1
-        min_dist = float('inf')
+        nearest_infected_hub = -1
+        min_infected_dist = float('inf')
         for g_id, g_coord in tracer_instance.global_hubs.items():
-            dist = ((g_coord[0] - x)**2 + (g_coord[1] - y)**2)**0.5
-            if dist < min_dist:
-                min_dist = dist
-                nearest_hub = g_id
+            if g_id in hub_infection_times:
+                dist = ((g_coord[0] - x)**2 + (g_coord[1] - y)**2)**0.5
+                if dist < min_infected_dist:
+                    min_infected_dist = dist
+                    nearest_infected_hub = g_id
                 
-        if min_dist < 10.0:
-            if nearest_hub in hub_infection_times and t >= hub_infection_times[nearest_hub]:
-                level = hub_infection_levels[nearest_hub]
-                inf_time = hub_infection_times[nearest_hub]
-                source_hub = hub_infection_sources[nearest_hub]
-                warnings.append({
-                    'time': format_time(t),
-                    'x': x,
-                    'y': y,
-                    'hub': f"G{nearest_hub}",
-                    'level': level,
-                    'message': f"注意！時間 {format_time(t)} 進入 {level} Hub G{nearest_hub} (從 {format_time(inf_time)} 起受 G{source_hub} 事故影響)。距事發源頭 G{nearest_event_hub} 距離: {round(min_dist_to_event, 2)}"
-                })
+        if min_infected_dist < 10.0:
+            level = hub_infection_levels[nearest_infected_hub]
+            inf_time = hub_infection_times[nearest_infected_hub]
+            source_hub = hub_infection_sources[nearest_infected_hub]
+            warnings.append({
+                'time': format_time(t),
+                'x': x,
+                'y': y,
+                'hub': f"G{nearest_infected_hub}",
+                'level': level,
+                'message': f"注意！時間 {format_time(t)} 進入 {level} Hub G{nearest_infected_hub} (從 {format_time(inf_time)} 起受 G{source_hub} 事故影響)。距事發源頭 G{nearest_event_hub} 距離: {round(min_dist_to_event, 2)}"
+            })
                 
     primary_users = [{'uid': int(uid), 'hub': int(info['hub']), 'time': format_time(info['t'])} for uid, info in all_primary_info.items()]
     secondary_users = [{'uid': int(uid), 'hub': int(info['hub']), 'time': format_time(info['t'])} for uid, info in all_secondary_info.items()]

@@ -7,19 +7,52 @@ import matplotlib.lines as mlines
 from sklearn.cluster import HDBSCAN, AgglomerativeClustering
 import io
 import base64
+import concurrent.futures
+
+from module.parallel_helper import process_single_user
 
 class UniversalCascadeTracer:
     def __init__(self, raw_df, smoothing_window=5, min_cluster_sizes=[15, 10, 5, 3]):
-        # raw_df 包含所有天數的資料
         self.raw_df = raw_df.sort_values(['uid', 'd', 't']).reset_index(drop=True)
         self.smoothing_window = smoothing_window
         self.mcs_list = min_cluster_sizes
         
+        # Cache local hub extractions: {smoothing_window: (user_local_hubs, all_local_centroids, event_log_no_global, user_local_labels)}
+        self.local_hubs_cache = {}
+        
         self.global_hubs = {} # {g_id: (x, y)}
         self.user_local_hubs = {} # {uid: {l_id: (x, y)}}
+        self.user_local_labels = {} # {uid: label_list}
+        self.local_to_global_map = {}
         self.event_log = pd.DataFrame()
 
-    def _cluster_logic(self, coords, merge_dist=8.0):
+    def build_local_hubs(self, smoothing_window):
+        if smoothing_window in self.local_hubs_cache:
+            return self.local_hubs_cache[smoothing_window]
+            
+        args_list = []
+        for uid, user_df in self.raw_df.groupby('uid'):
+            args_list.append((uid, user_df[['x', 'y', 'd', 't']], smoothing_window, self.mcs_list))
+            
+        user_local_hubs_all = {}
+        all_local_centroids_all = []
+        hub_events_all = []
+        user_local_labels_all = {}
+        
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            results = list(executor.map(process_single_user, args_list))
+            
+        for uid, user_local_hubs, all_local_centroids, hub_events, local_labels in results:
+            user_local_hubs_all[uid] = user_local_hubs
+            all_local_centroids_all.extend(all_local_centroids)
+            hub_events_all.extend(hub_events)
+            user_local_labels_all[uid] = local_labels
+            
+        event_log_no_global = pd.DataFrame(hub_events_all)
+        self.local_hubs_cache[smoothing_window] = (user_local_hubs_all, all_local_centroids_all, event_log_no_global, user_local_labels_all)
+        return user_local_hubs_all, all_local_centroids_all, event_log_no_global, user_local_labels_all
+
+    def _cluster_logic_global(self, coords, merge_dist=8.0):
         best_labels = None
         for mcs in self.mcs_list:
             db = HDBSCAN(min_cluster_size=mcs, copy=True).fit(coords)
@@ -39,45 +72,29 @@ class UniversalCascadeTracer:
         centroids = temp_df[temp_df['zone_id'] != -1].groupby('zone_id')[['x', 'y']].mean().to_dict('index')
         return temp_df['zone_id'].values, centroids
 
-    def build_universal_hubs_and_log(self, radius_K):
-        all_local_centroids = []
-        hub_events = []
+    def build_universal_hubs_and_log(self, radius_K, smoothing_window=None):
+        if smoothing_window is not None:
+            self.smoothing_window = smoothing_window
+            
+        user_local_hubs, all_local_centroids, event_log_no_global, user_local_labels = self.build_local_hubs(self.smoothing_window)
+        self.user_local_hubs = user_local_hubs
+        self.user_local_labels = user_local_labels
         
-        for uid, user_df in self.raw_df.groupby('uid'):
-            smooth_x = user_df['x'].rolling(window=self.smoothing_window, center=True, min_periods=1).median()
-            smooth_y = user_df['y'].rolling(window=self.smoothing_window, center=True, min_periods=1).median()
-            coords = np.column_stack((smooth_x, smooth_y))
-            
-            labels, centroids = self._cluster_logic(coords)
-            
-            self.user_local_hubs[uid] = {}
-            for l_id, center in centroids.items():
-                coord = (center['x'], center['y'])
-                self.user_local_hubs[uid][l_id] = coord
-                all_local_centroids.append({'uid': uid, 'l_id': l_id, 'x': coord[0], 'y': coord[1]})
-            
-            user_df_copy = user_df.copy()
-            user_df_copy['local_hub'] = labels
-            valid_events = user_df_copy[user_df_copy['local_hub'] != -1]
-            
-            for _, row in valid_events.iterrows():
-                hub_events.append({
-                    'uid': uid, 'd': row['d'], 't': row['t'],
-                    'local_hub': row['local_hub']
-                })
-
         if not all_local_centroids:
+            self.global_hubs = {}
+            self.event_log = pd.DataFrame()
+            self.local_to_global_map = {}
             return
-
+            
         centroid_df = pd.DataFrame(all_local_centroids)
-        global_labels, global_centroids = self._cluster_logic(centroid_df[['x', 'y']].values, merge_dist=radius_K)
+        global_labels, global_centroids = self._cluster_logic_global(centroid_df[['x', 'y']].values, merge_dist=radius_K)
         centroid_df['global_hub'] = global_labels
         
         self.global_hubs = {g_id: (val['x'], val['y']) for g_id, val in global_centroids.items()}
-        
         mapping_dict = centroid_df.set_index(['uid', 'l_id'])['global_hub'].to_dict()
+        self.local_to_global_map = mapping_dict
         
-        self.event_log = pd.DataFrame(hub_events)
+        self.event_log = event_log_no_global.copy()
         self.event_log['global_hub'] = self.event_log.apply(
             lambda x: mapping_dict.get((x['uid'], x['local_hub']), -1), axis=1
         )
@@ -95,7 +112,6 @@ class UniversalCascadeTracer:
             (day_events['global_hub'] == target_global_hub)
         ]
         
-        # {uid: t_exp}
         p_info_raw = primary_hits.groupby('uid')['t'].min().to_dict()
         primary_uids = set(p_info_raw.keys())
         
@@ -173,14 +189,16 @@ def generate_impact_plot(tracer, target_d, target_global_hub, primary_info, seco
     if not day_raw.empty:
         plt.scatter(day_raw['x'], day_raw['y'], c='lightgray', s=5, alpha=0.1, zorder=1, label='All Coordinates')
     
+    active_xs = []
+    active_ys = []
+    
     if target_global_hub in tracer.global_hubs:
         g_coord = tracer.global_hubs[target_global_hub]
         hub_label = 'Blocked Hub' if traffic_mode else 'Trigger Global Hub'
         plt.scatter(g_coord[0], g_coord[1], c='black', marker='*', s=250, edgecolor='white', zorder=6, label=hub_label)
+        active_xs.append(g_coord[0])
+        active_ys.append(g_coord[1])
         
-    min_x, max_x = float('inf'), float('-inf')
-    min_y, max_y = float('inf'), float('-inf')
-    
     # Draw Primary Impact Paths and Hubs
     px, py = [], []
     for uid, info in primary_info.items():
@@ -204,24 +222,24 @@ def generate_impact_plot(tracer, target_d, target_global_hub, primary_info, seco
                     
                     if not before_contact.empty:
                         plt.plot(before_contact['x'], before_contact['y'], color='dodgerblue', linestyle='-', marker='.', markersize=4, alpha=0.6, zorder=3)
-                        min_x = min(min_x, before_contact['x'].min())
-                        max_x = max(max_x, before_contact['x'].max())
-                        min_y = min(min_y, before_contact['y'].min())
-                        max_y = max(max_y, before_contact['y'].max())
+                        active_xs.extend(before_contact['x'].tolist())
+                        active_ys.extend(before_contact['y'].tolist())
                     if not after_contact.empty:
                         plt.plot(after_contact['x'], after_contact['y'], color='red', linestyle='-', marker='.', markersize=4, alpha=0.8, zorder=4)
-                        min_x = min(min_x, after_contact['x'].min())
-                        max_x = max(max_x, after_contact['x'].max())
-                        min_y = min(min_y, after_contact['y'].min())
-                        max_y = max(max_y, after_contact['y'].max())
+                        active_xs.extend(after_contact['x'].tolist())
+                        active_ys.extend(after_contact['y'].tolist())
             else:
                 user_data = day_raw[(day_raw['uid'] == uid) & (day_raw['t'] >= t_exp)].sort_values('t')
                 if not user_data.empty:
                     plt.plot(user_data['x'], user_data['y'], color='red', linestyle='-', marker='.', markersize=4, alpha=0.7, zorder=4)
+                    active_xs.extend(user_data['x'].tolist())
+                    active_ys.extend(user_data['y'].tolist())
 
         if h in tracer.global_hubs:
             px.append(tracer.global_hubs[h][0])
             py.append(tracer.global_hubs[h][1])
+            active_xs.append(tracer.global_hubs[h][0])
+            active_ys.append(tracer.global_hubs[h][1])
             
     if px and not traffic_mode:
         plt.scatter(px, py, c='red', marker='s', s=60, zorder=5, label='Primary Impact Hubs')
@@ -238,10 +256,14 @@ def generate_impact_plot(tracer, target_d, target_global_hub, primary_info, seco
                 user_data = day_raw[(day_raw['uid'] == uid) & (day_raw['t'] >= t_exp)].sort_values('t')
                 if not user_data.empty:
                     plt.plot(user_data['x'], user_data['y'], color='gold', linestyle='--', marker='.', markersize=4, alpha=0.7, zorder=3)
+                    active_xs.extend(user_data['x'].tolist())
+                    active_ys.extend(user_data['y'].tolist())
 
             if h in tracer.global_hubs:
                 sx.append(tracer.global_hubs[h][0])
                 sy.append(tracer.global_hubs[h][1])
+                active_xs.append(tracer.global_hubs[h][0])
+                active_ys.append(tracer.global_hubs[h][1])
                 
         if sx:
             plt.scatter(sx, sy, c='gold', marker='s', s=60, edgecolor='black', linewidth=0.5, zorder=4, label='Secondary Impact Hubs')
@@ -251,6 +273,8 @@ def generate_impact_plot(tracer, target_d, target_global_hub, primary_info, seco
         uy = [float(p['y']) for p in user_trajectory]
         plt.plot(ux, uy, color='blue', linestyle='-', marker='o', markersize=6, linewidth=2, zorder=7)
         plt.scatter(ux, uy, c='cyan', s=100, edgecolor='blue', zorder=8)
+        active_xs.extend(ux)
+        active_ys.extend(uy)
 
     handles, labels = plt.gca().get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
@@ -265,16 +289,6 @@ def generate_impact_plot(tracer, target_d, target_global_hub, primary_info, seco
                 del by_label['Primary Impact Path']
             if 'Secondary Impact Path' in by_label:
                 del by_label['Secondary Impact Path']
-                
-            if min_x != float('inf') and min_x != max_x:
-                pad_x = max((max_x - min_x) * 0.1, 5)
-                pad_y = max((max_y - min_y) * 0.1, 5)
-                plt.xlim(min_x - pad_x, max_x + pad_x)
-                plt.ylim(min_y - pad_y, max_y + pad_y)
-            elif target_global_hub in tracer.global_hubs:
-                g_coord = tracer.global_hubs[target_global_hub]
-                plt.xlim(g_coord[0] - 20, g_coord[0] + 20)
-                plt.ylim(g_coord[1] - 20, g_coord[1] + 20)
         else:
             primary_line = mlines.Line2D([], [], color='red', linestyle='-', marker='.', label='Primary Impact Path')
             secondary_line = mlines.Line2D([], [], color='gold', linestyle='--', marker='.', label='Secondary Impact Path')
@@ -284,6 +298,68 @@ def generate_impact_plot(tracer, target_d, target_global_hub, primary_info, seco
     if user_trajectory:
         traj_line = mlines.Line2D([], [], color='blue', linestyle='-', marker='o', label='User Trajectory')
         by_label['User Trajectory'] = traj_line
+
+    # Zoom in to trajectory footprint or active elements area
+    if user_trajectory:
+        ux = [float(p['x']) for p in user_trajectory]
+        uy = [float(p['y']) for p in user_trajectory]
+        min_ux = min(ux)
+        max_ux = max(ux)
+        min_uy = min(uy)
+        max_uy = max(uy)
+        
+        lim_min_x = min_ux - 10.0
+        lim_max_x = max_ux + 10.0
+        lim_min_y = min_uy - 10.0
+        lim_max_y = max_uy + 10.0
+        
+        # Cap to map boundary if map boundary is available
+        if not day_raw.empty:
+            map_min_x = day_raw['x'].min()
+            map_max_x = day_raw['x'].max()
+            map_min_y = day_raw['y'].min()
+            map_max_y = day_raw['y'].max()
+            
+            if lim_min_x < map_min_x:
+                lim_min_x = map_min_x
+            if lim_max_x > map_max_x:
+                lim_max_x = map_max_x
+            if lim_min_y < map_min_y:
+                lim_min_y = map_min_y
+            if lim_max_y > map_max_y:
+                lim_max_y = map_max_y
+                
+        plt.xlim(lim_min_x, lim_max_x)
+        plt.ylim(lim_min_y, lim_max_y)
+    elif active_xs and active_ys:
+        min_x_val = min(active_xs)
+        max_x_val = max(active_xs)
+        min_y_val = min(active_ys)
+        max_y_val = max(active_ys)
+        
+        dx = max_x_val - min_x_val
+        dy = max_y_val - min_y_val
+        
+        if dx < 1e-5:
+            dx = 20.0
+        if dy < 1e-5:
+            dy = 20.0
+            
+        cx = (min_x_val + max_x_val) / 2.0
+        cy = (min_y_val + max_y_val) / 2.0
+        
+        margin = 0.15
+        width = dx * (1 + 2 * margin)
+        height = dy * (1 + 2 * margin)
+        
+        ratio = width / height
+        if ratio > 2.0:
+            height = width / 2.0
+        elif ratio < 0.5:
+            width = height * 0.5
+            
+        plt.xlim(cx - width / 2.0, cx + width / 2.0)
+        plt.ylim(cy - height / 2.0, cy + height / 2.0)
 
     title_suffix = "(Traffic Blockage Mode)" if traffic_mode else ("(With Paths)" if draw_paths else "(Hubs Only)")
     if user_trajectory:
